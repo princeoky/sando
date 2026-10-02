@@ -1,0 +1,42 @@
+{
+  "name": "sando",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "Shared": {
+        "$path": "src/shared"
+      },
+      "Remotes": {
+        "$className": "Folder",
+        "CombatAction": { "$className": "RemoteEvent" },
+        "CombatFeedback": { "$className": "RemoteEvent" },
+        "MatchState": { "$className": "RemoteEvent" },
+        "QueueRequest": { "$className": "RemoteEvent" },
+        "QueueState": { "$className": "RemoteEvent" },
+        "Notify": { "$className": "RemoteEvent" }
+      }
+    },
+    "ServerScriptService": {
+      "Server": {
+        "$path": "src/server"
+      }
+    },
+    "Players": {
+      "$properties": {
+        "CharacterAutoLoads": false
+      }
+    },
+    "StarterPlayer": {
+      "$properties": {
+        "CharacterWalkSpeed": 16,
+        "EnableMouseLockOption": true,
+        "CameraMaxZoomDistance": 45
+      },
+      "StarterPlayerScripts": {
+        "Client": {
+          "$path": "src/client"
+        }
+      }
+    }
+  }
+}
