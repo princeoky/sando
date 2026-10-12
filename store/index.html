@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ochre — Objects for slow living</title>
+  <meta name="description" content="Hand-made vessels, linen, bronze, oak and glass. Small batches, made by hand.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;1,400&family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%238a4b2c'/></svg>">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="announce">Complimentary shipping on orders over $200 · Each piece made by hand</div>
+
+  <header class="site-header">
+    <nav class="nav">
+      <a href="#shop" class="nav-link">Shop</a>
+      <a href="#story" class="nav-link">Story</a>
+    </nav>
+    <a href="#top" class="logo" aria-label="Ochre home">Ochre</a>
+    <button class="cart-toggle" id="cartToggle" aria-label="Open cart">
+      Bag <span class="cart-count" id="cartCount">0</span>
+    </button>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <img src="images/vessel.webp" alt="Dark hand-coiled clay vessel resting on a rough stone plinth in a sunlit concrete room" class="hero-img">
+      <div class="hero-copy">
+        <p class="eyebrow">Autumn Collection</p>
+        <h1>Objects shaped<br><em>by hand and time</em></h1>
+        <a href="#shop" class="btn btn-light">Shop the collection</a>
+      </div>
+    </section>
+
+    <section class="intro">
+      <p>Five objects, made in small batches by makers who work with clay, flax, bronze, oak and glass. Nothing here is perfect, and that is the point.</p>
+    </section>
+
+    <section class="shop" id="shop">
+      <div class="section-head">
+        <h2>The Collection</h2>
+        <div class="filters" id="filters" role="tablist" aria-label="Filter by category"></div>
+      </div>
+      <div class="grid" id="productGrid"></div>
+    </section>
+
+    <section class="story" id="story">
+      <div class="story-img">
+        <img src="images/linen.webp" alt="Folded rust linen on a weathered oak bench" loading="lazy">
+      </div>
+      <div class="story-copy">
+        <p class="eyebrow">Our Story</p>
+        <h2>Made slowly, <em>meant to last</em></h2>
+        <p>Ochre began with a single clay vessel and a question: what if the things we live with were made with the same patience we wish we had? Every piece in the collection comes from a small studio. Each one is shaped, woven, cast, carved or blown by hand.</p>
+        <p>We make small runs and restock only when our makers are ready. When something sells out, it may be gone for a season.</p>
+        <ul class="values">
+          <li><span>01</span> Natural materials only</li>
+          <li><span>02</span> Small-batch studios</li>
+          <li><span>03</span> Plastic-free packaging</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="newsletter">
+      <h2>Letters from the studio</h2>
+      <p>New pieces, restocks and the occasional maker profile. No more than once a month.</p>
+      <form class="news-form" id="newsForm">
+        <label for="newsEmail" class="sr-only">Email address</label>
+        <input type="email" id="newsEmail" placeholder="Your email address" required>
+        <button type="submit" class="btn btn-dark">Subscribe</button>
+      </form>
+      <p class="form-note" id="newsNote" aria-live="polite"></p>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-cols">
+      <div>
+        <p class="logo footer-logo">Ochre</p>
+        <p class="muted">Objects for slow living.</p>
+      </div>
+      <div>
+        <h4>Shop</h4>
+        <a href="#shop">All objects</a>
+        <a href="#shop" data-filter-link="Ceramics">Ceramics</a>
+        <a href="#shop" data-filter-link="Textiles">Textiles</a>
+        <a href="#shop" data-filter-link="Tableware">Tableware</a>
+      </div>
+      <div>
+        <h4>Help</h4>
+        <a href="#">Shipping &amp; returns</a>
+        <a href="#">Care guide</a>
+        <a href="#">Contact</a>
+      </div>
+    </div>
+    <p class="muted small">© <span id="year"></span> Ochre. All pieces are handmade, so small variations will occur.</p>
+  </footer>
+
+  <!-- Product detail -->
+  <div class="overlay" id="overlay" hidden></div>
+  <dialog class="product-modal" id="productModal" aria-labelledby="pmTitle">
+    <button class="close" data-close aria-label="Close">×</button>
+    <div class="pm-body" id="pmBody"></div>
+  </dialog>
+
+  <!-- Cart drawer -->
+  <aside class="drawer" id="cartDrawer" aria-label="Shopping bag" aria-hidden="true">
+    <div class="drawer-head">
+      <h3 id="drawerTitle">Your bag</h3>
+      <button class="close" id="cartClose" aria-label="Close bag">×</button>
+    </div>
+    <div class="drawer-body" id="drawerBody"></div>
+    <div class="drawer-foot" id="drawerFoot"></div>
+  </aside>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
