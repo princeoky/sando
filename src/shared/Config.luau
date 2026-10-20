@@ -44,6 +44,17 @@ Config.MatchEndTime = 5
 
 -- Queue modes
 Config.Modes = {
+	Practice = {
+		id = "Practice",
+		displayName = "Practice vs Bot",
+		teamSize = 1,
+		roundsToWin = 2,
+		ranked = false,
+		practice = true, -- fights an AI bot, starts instantly, doesn't count as a duel
+		unlockDuels = 0,
+		winGold = 20,
+		lossGold = 5,
+	},
 	Casual = {
 		id = "Casual",
 		displayName = "1v1 Duel",
@@ -75,7 +86,7 @@ Config.Modes = {
 		lossGold = 30,
 	},
 }
-Config.ModeOrder = { "Casual", "Ranked", "Clash" }
+Config.ModeOrder = { "Practice", "Casual", "Ranked", "Clash" }
 
 -- Ranked
 Config.StartingElo = 1000
@@ -84,6 +95,10 @@ Config.EloK = 32
 -- Data
 Config.DataStoreName = "SandoPlayerData_v1"
 Config.AutosaveInterval = 120
+
+-- Practice bot: chance to react to an incoming swing
+Config.BotParryChance = 0.3
+Config.BotDodgeChance = 0.15
 
 -- Map
 Config.ArenaCount = 4

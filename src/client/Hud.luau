@@ -190,7 +190,7 @@ local playPanel = new("Frame", {
 	Name = "PlayPanel",
 	AnchorPoint = Vector2.new(0, 0.5),
 	Position = UDim2.new(0, 16, 0.5, 0),
-	Size = UDim2.fromOffset(250, 300),
+	Size = UDim2.fromOffset(250, 366),
 	BackgroundColor3 = COLORS.panel,
 	BackgroundTransparency = 0.15,
 	Parent = gui,
@@ -239,7 +239,11 @@ local function refreshPlayPanel()
 			entry.detail.Text = string.format("In queue (%d/%d). Click to leave", queueCounts[modeId] or 1, needed)
 			entry.title.TextColor3 = COLORS.text
 		else
-			entry.detail.Text = string.format("%d/%d waiting  ·  Bo%d", queueCounts[modeId] or 0, needed, mode.roundsToWin * 2 - 1)
+			if mode.practice then
+				entry.detail.Text = "Solo vs AI  ·  starts instantly"
+			else
+				entry.detail.Text = string.format("%d/%d waiting  ·  Bo%d", queueCounts[modeId] or 0, needed, mode.roundsToWin * 2 - 1)
+			end
 			entry.title.TextColor3 = COLORS.text
 		end
 		entry.stroke.Transparency = if queued == modeId then 0 else 1
@@ -294,7 +298,7 @@ local function makeTeamColumn(side: number)
 end
 local columns = { makeTeamColumn(1), makeTeamColumn(2) }
 
-type Bar = { player: Player, fill: Frame, text: TextLabel, frame: Frame }
+type Bar = { character: Model?, fill: Frame, text: TextLabel, frame: Frame }
 local bars: { Bar } = {}
 
 local function clearBars()
@@ -304,14 +308,14 @@ local function clearBars()
 	table.clear(bars)
 end
 
-local function addBar(target: Player, column: Frame, color: Color3, order: number)
+local function addBar(target: { name: string, character: Model? }, column: Frame, color: Color3, order: number)
 	local frame = new("Frame", {
 		Size = UDim2.new(1, 0, 0, 40),
 		BackgroundTransparency = 1,
 		LayoutOrder = order,
 		Parent = column,
 	})
-	label({ Size = UDim2.new(1, 0, 0, 16), Text = target.DisplayName, TextXAlignment = if column == columns[1] then Enum.TextXAlignment.Right else Enum.TextXAlignment.Left, Parent = frame })
+	label({ Size = UDim2.new(1, 0, 0, 16), Text = target.name, TextXAlignment = if column == columns[1] then Enum.TextXAlignment.Right else Enum.TextXAlignment.Left, Parent = frame })
 	local back = new("Frame", {
 		Position = UDim2.fromOffset(0, 18),
 		Size = UDim2.new(1, 0, 0, 18),
@@ -327,7 +331,7 @@ local function addBar(target: Player, column: Frame, color: Color3, order: numbe
 		Parent = back,
 	}, { corner(6) })
 	local text = label({ Size = UDim2.fromScale(1, 1), Text = "100", Font = Enum.Font.GothamBlack, ZIndex = 2, Parent = back })
-	table.insert(bars, { player = target, fill = fill, text = text, frame = frame })
+	table.insert(bars, { character = target.character, fill = fill, text = text, frame = frame })
 end
 
 -- Ultimate meter + cooldowns (bottom center)
@@ -520,9 +524,7 @@ function Hud.start()
 			announce("DODGE", COLORS.ally, nil, 0.4)
 		elseif kind == "KO" and currentMatch and a ~= myCharacter then
 			local victim = Players:GetPlayerFromCharacter(a)
-			if victim then
-				toast(victim.DisplayName .. " was knocked out", "good")
-			end
+			toast((if victim then victim.DisplayName else a.Name) .. " was knocked out", "good")
 		end
 	end)
 
@@ -549,7 +551,7 @@ function Hud.start()
 		-- Health bars and round timer
 		if currentMatch then
 			for _, bar in bars do
-				local character = bar.player.Character
+				local character = bar.character
 				local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 				local fraction = if humanoid then math.clamp(humanoid.Health / humanoid.MaxHealth, 0, 1) else 0
 				bar.fill.Size = UDim2.fromScale(fraction, 1)

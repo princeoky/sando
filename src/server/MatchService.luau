@@ -1,6 +1,9 @@
 -- Runs matches: grabs a free arena, spawns teams, loops countdown -> fight ->
 -- round end until a team wins enough rounds, then pays out and returns
 -- everyone to the lobby.
+--
+-- Team members are Players or practice Bots. Helpers below hide the
+-- difference (spawning, messaging, rewards).
 
 local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
@@ -13,10 +16,13 @@ local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 local MatchState = Remotes.MatchState :: RemoteEvent
 local CombatFeedback = Remotes.CombatFeedback :: RemoteEvent
 
+local Bot = require(script.Parent.Bot)
 local CombatService = require(script.Parent.CombatService)
 local DataService = require(script.Parent.DataService)
 
 local MatchService = {}
+
+type Member = any -- Player or Bot
 
 type Arena = {
 	index: number,
@@ -29,17 +35,18 @@ type Arena = {
 type Match = {
 	mode: any,
 	arena: Arena,
-	teams: { { Player } },
+	teams: { { Member } },
 	scores: { number },
 	round: number,
 	phase: string,
-	alive: { [Player]: boolean },
+	alive: { [Member]: boolean },
 	endsAt: number,
 	connections: { RBXScriptConnection },
+	bots: { any },
 }
 
 local arenas: { Arena } = {}
-local playerMatch: { [Player]: Match } = {}
+local memberMatch: { [Member]: Match } = {}
 
 local endedEvent = Instance.new("BindableEvent")
 MatchService.Ended = endedEvent.Event
@@ -48,27 +55,63 @@ local function serverNow(): number
 	return workspace:GetServerTimeNow()
 end
 
-local function teamOf(match: Match, player: Player): number?
+local function isBot(member: Member): boolean
+	return type(member) == "table" and member.isBot == true
+end
+
+local function stillHere(member: Member): boolean
+	if isBot(member) then
+		return member.active
+	end
+	return member.Parent ~= nil
+end
+
+-- Spawns a player's character. LoadCharacterAsync is the current API; fall
+-- back to LoadCharacter on Studio builds that don't have it yet.
+function MatchService.spawnPlayer(player: Player): boolean
+	local ok, err = pcall(function()
+		player:LoadCharacterAsync()
+	end)
+	if not ok then
+		ok, err = pcall(function()
+			(player :: any):LoadCharacter()
+		end)
+	end
+	if not ok then
+		warn("[sando] Couldn't spawn", player.Name, err)
+	end
+	return ok
+end
+
+local function teamOf(match: Match, member: Member): number?
 	for team, members in match.teams do
-		if table.find(members, player) then
+		if table.find(members, member) then
 			return team
 		end
 	end
 	return nil
 end
 
-local function forEachPlayer(match: Match, fn: (Player, number, number) -> ())
+local function forEachMember(match: Match, fn: (Member, number, number) -> ())
 	for team, members in match.teams do
-		for slot, player in members do
-			fn(player, team, slot)
+		for slot, member in members do
+			fn(member, team, slot)
 		end
 	end
 end
 
+local function forEachPlayer(match: Match, fn: (Player, number, number) -> ())
+	forEachMember(match, function(member, team, slot)
+		if not isBot(member) then
+			fn(member, team, slot)
+		end
+	end)
+end
+
 local function aliveCount(match: Match, team: number): number
 	local count = 0
-	for _, player in match.teams[team] do
-		if match.alive[player] then
+	for _, member in match.teams[team] do
+		if match.alive[member] then
 			count += 1
 		end
 	end
@@ -77,13 +120,25 @@ end
 
 local function teamHealth(match: Match, team: number): number
 	local total = 0
-	for _, player in match.teams[team] do
-		local humanoid = match.alive[player] and player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+	for _, member in match.teams[team] do
+		local humanoid = match.alive[member] and member.Character and member.Character:FindFirstChildOfClass("Humanoid")
 		if humanoid then
 			total += humanoid.Health / humanoid.MaxHealth
 		end
 	end
 	return total
+end
+
+-- Clients get a plain snapshot of each team: names and current characters.
+local function teamSnapshot(match: Match)
+	local snapshot = {}
+	for team, members in match.teams do
+		snapshot[team] = {}
+		for _, member in members do
+			table.insert(snapshot[team], { name = member.DisplayName, character = member.Character })
+		end
+	end
+	return snapshot
 end
 
 local function sendState(match: Match, extra: { [string]: any }?, personalize: ((Player, { [string]: any }) -> ())?)
@@ -95,7 +150,7 @@ local function sendState(match: Match, extra: { [string]: any }?, personalize: (
 		round = match.round,
 		scores = table.clone(match.scores),
 		roundsToWin = match.mode.roundsToWin,
-		teams = { table.clone(match.teams[1]), table.clone(match.teams[2]) },
+		teams = teamSnapshot(match),
 		endsAt = match.endsAt,
 	}
 	if extra then
@@ -114,8 +169,8 @@ local function sendState(match: Match, extra: { [string]: any }?, personalize: (
 end
 
 local function setFrozen(match: Match, frozen: boolean)
-	forEachPlayer(match, function(player)
-		local character = player.Character
+	forEachMember(match, function(member)
+		local character = member.Character
 		local root = character and character:FindFirstChild("HumanoidRootPart")
 		if root then
 			(root :: BasePart).Anchored = frozen
@@ -135,26 +190,38 @@ local function spawnRound(match: Match)
 	table.clear(match.alive)
 
 	local pending = 0
-	forEachPlayer(match, function(player, team, slot)
+	forEachMember(match, function(member, team, slot)
 		pending += 1
 		task.spawn(function()
+			local spawnAt = match.arena.spawns[team][slot] or match.arena.spawns[team][1]
 			local ok, err = pcall(function()
-				player:LoadCharacterAsync()
-			end)
-			local character = player.Character
-			local root = character and character:WaitForChild("HumanoidRootPart", 5) :: BasePart?
-			local humanoid = character and character:WaitForChild("Humanoid", 5) :: Humanoid?
-			if ok and character and root and humanoid and player.Parent then
-				local spawnSlot = match.arena.spawns[team][slot] or match.arena.spawns[team][1]
-				character:PivotTo(spawnSlot)
+				local character: Model
+				if isBot(member) then
+					character = member:spawn(spawnAt)
+				else
+					if not MatchService.spawnPlayer(member) then
+						return
+					end
+					character = member.Character
+				end
+				if not character or not stillHere(member) then
+					return
+				end
+				local root = character:WaitForChild("HumanoidRootPart", 5) :: BasePart?
+				local humanoid = character:WaitForChild("Humanoid", 5) :: Humanoid?
+				if not root or not humanoid then
+					return
+				end
+				character:PivotTo(spawnAt)
 				root.Anchored = true
-				match.alive[player] = true
+				match.alive[member] = true
 				table.insert(match.connections, humanoid.Died:Connect(function()
-					match.alive[player] = nil
+					match.alive[member] = nil
 					CombatFeedback:FireAllClients("KO", character)
 				end))
-			elseif not ok then
-				warn("[sando] Failed to spawn", player.Name, err)
+			end)
+			if not ok then
+				warn("[sando] Failed to spawn", member.Name, err)
 			end
 			pending -= 1
 		end)
@@ -166,14 +233,24 @@ local function spawnRound(match: Match)
 	end
 end
 
+-- A team with no real players left forfeits (bots can't win on their own).
 local function forfeitWinner(match: Match): number?
-	local empty1 = #match.teams[1] == 0
-	local empty2 = #match.teams[2] == 0
-	if empty1 and empty2 then
+	local function hasPlayers(team: number): boolean
+		for _, member in match.teams[team] do
+			if not isBot(member) then
+				return true
+			end
+		end
+		return false
+	end
+	local function empty(team: number): boolean
+		return #match.teams[team] == 0
+	end
+	if not hasPlayers(1) and not hasPlayers(2) then
 		return 0
-	elseif empty1 then
+	elseif empty(1) then
 		return 2
-	elseif empty2 then
+	elseif empty(2) then
 		return 1
 	end
 	return nil
@@ -186,8 +263,8 @@ local function eloChanges(match: Match, winner: number): { [Player]: number }
 	end
 	local function averageElo(team: number): number
 		local sum, n = 0, 0
-		for _, player in match.teams[team] do
-			local data = DataService.get(player)
+		for _, member in match.teams[team] do
+			local data = not isBot(member) and DataService.get(member)
 			if data then
 				sum += data.elo
 				n += 1
@@ -201,8 +278,8 @@ local function eloChanges(match: Match, winner: number): { [Player]: number }
 		local expected = 1 / (1 + 10 ^ ((ratings[other] - ratings[team]) / 400))
 		local score = if team == winner then 1 else 0
 		local delta = math.floor(Config.EloK * (score - expected) + 0.5)
-		for _, player in match.teams[team] do
-			changes[player] = delta
+		for _, member in match.teams[team] do
+			changes[member] = delta
 		end
 	end
 	return changes
@@ -217,7 +294,11 @@ local function finishMatch(match: Match, winner: number)
 	forEachPlayer(match, function(player, team)
 		local won = team == winner
 		local gold = if won then match.mode.winGold else match.mode.lossGold
-		DataService.recordMatch(player, won, gold, elo[player])
+		if match.mode.practice then
+			DataService.addGold(player, gold) -- practice doesn't count as a duel
+		else
+			DataService.recordMatch(player, won, gold, elo[player])
+		end
 		rewards[player] = { gold = gold, elo = elo[player] }
 	end)
 
@@ -230,16 +311,18 @@ local function finishMatch(match: Match, winner: number)
 	task.wait(Config.MatchEndTime)
 
 	clearConnections(match)
+	for _, bot in match.bots do
+		memberMatch[bot] = nil
+		bot:destroy()
+	end
 	forEachPlayer(match, function(player)
-		playerMatch[player] = nil
+		memberMatch[player] = nil
 		player:SetAttribute("InMatch", false)
 		CombatService.reset(player, true)
 		MatchState:FireClient(player, { state = "Lobby" })
 		task.spawn(function()
 			if player.Parent then
-				pcall(function()
-					player:LoadCharacterAsync()
-				end)
+				MatchService.spawnPlayer(player)
 			end
 		end)
 	end)
@@ -337,11 +420,11 @@ function MatchService.init(mapArenas: { Arena })
 	arenas = mapArenas
 
 	Players.PlayerRemoving:Connect(function(player)
-		local match = playerMatch[player]
+		local match = memberMatch[player]
 		if not match then
 			return
 		end
-		playerMatch[player] = nil
+		memberMatch[player] = nil
 		match.alive[player] = nil
 		for _, members in match.teams do
 			local index = table.find(members, player)
@@ -362,10 +445,38 @@ function MatchService.hasFreeArena(): boolean
 end
 
 function MatchService.isInMatch(player: Player): boolean
-	return playerMatch[player] ~= nil
+	return memberMatch[player] ~= nil
 end
 
-function MatchService.start(modeId: string, teams: { { Player } }): boolean
+-- Who a fighter's swings can hit right now.
+function MatchService.getTargets(member: Member): { Model }
+	local match = memberMatch[member]
+	if not match then
+		return CollectionService:GetTagged("SandoDummy") :: { Model }
+	end
+	local myTeam = teamOf(match, member)
+	local targets = {}
+	for team, members in match.teams do
+		if team ~= myTeam then
+			for _, enemy in members do
+				if match.alive[enemy] and enemy.Character then
+					table.insert(targets, enemy.Character)
+				end
+			end
+		end
+	end
+	return targets
+end
+
+function MatchService.canFight(member: Member): boolean
+	local match = memberMatch[member]
+	if not match then
+		return not isBot(member) -- lobby: players can hit dummies
+	end
+	return match.phase == "Fighting" and match.alive[member] == true
+end
+
+function MatchService.start(modeId: string, teams: { { Member } }): boolean
 	local mode = Config.Modes[modeId]
 	local free = {}
 	for _, arena in arenas do
@@ -389,11 +500,16 @@ function MatchService.start(modeId: string, teams: { { Player } }): boolean
 		alive = {},
 		endsAt = 0,
 		connections = {},
+		bots = {},
 	}
-	forEachPlayer(match, function(player)
-		playerMatch[player] = match
-		player:SetAttribute("InMatch", true)
-		CombatService.reset(player, true)
+	forEachMember(match, function(member)
+		memberMatch[member] = match
+		if isBot(member) then
+			table.insert(match.bots, member)
+		else
+			member:SetAttribute("InMatch", true)
+			CombatService.reset(member, true)
+		end
 	end)
 
 	task.spawn(function()
@@ -408,32 +524,17 @@ function MatchService.start(modeId: string, teams: { { Player } }): boolean
 	return true
 end
 
--- Who a player's swings can hit right now.
-function MatchService.getTargets(player: Player): { Model }
-	local match = playerMatch[player]
-	if not match then
-		return CollectionService:GetTagged("SandoDummy") :: { Model }
+-- Practice: one player against a bot, starting right away.
+function MatchService.startPractice(player: Player): boolean
+	if not MatchService.hasFreeArena() then
+		return false
 	end
-	local myTeam = teamOf(match, player)
-	local targets = {}
-	for team, members in match.teams do
-		if team ~= myTeam then
-			for _, enemy in members do
-				if match.alive[enemy] and enemy.Character then
-					table.insert(targets, enemy.Character)
-				end
-			end
-		end
+	local bot = Bot.new(MatchService.getTargets, MatchService.canFight)
+	if not MatchService.start("Practice", { { player }, { bot } }) then
+		bot:destroy()
+		return false
 	end
-	return targets
-end
-
-function MatchService.canFight(player: Player): boolean
-	local match = playerMatch[player]
-	if not match then
-		return true -- lobby: only dummies are valid targets
-	end
-	return match.phase == "Fighting" and match.alive[player] == true
+	return true
 end
 
 return MatchService

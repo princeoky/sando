@@ -62,11 +62,26 @@ local function key(player: Player)
 	return "player_" .. player.UserId
 end
 
+-- Errors that will never succeed on retry (unpublished place, or Studio
+-- without API access). After one of these we stop using DataStores.
+local function isPermanentError(message: string): boolean
+	local lower = string.lower(message)
+	return string.find(lower, "403", 1, true) ~= nil
+		or string.find(lower, "studio", 1, true) ~= nil
+		or string.find(lower, "publish", 1, true) ~= nil
+		or string.find(lower, "api services", 1, true) ~= nil
+end
+
 local function withRetries(fn: () -> any): (boolean, any)
 	local ok, result
 	for attempt = 1, 3 do
 		ok, result = pcall(fn)
 		if ok then
+			return ok, result
+		end
+		if isPermanentError(tostring(result)) then
+			warn("[sando] DataStores unavailable, progress will not save:", result)
+			store = nil
 			return ok, result
 		end
 		task.wait(attempt)
@@ -159,6 +174,14 @@ end
 
 function DataService.isLoaded(player: Player): boolean
 	return profiles[player] ~= nil
+end
+
+function DataService.waitForLoad(player: Player, timeout: number)
+	local started = os.clock()
+	while not profiles[player] and player.Parent and os.clock() - started < timeout do
+		task.wait(0.1)
+	end
+	return profiles[player]
 end
 
 function DataService.addGold(player: Player, amount: number)

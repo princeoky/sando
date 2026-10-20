@@ -7,8 +7,11 @@ Everything, including the map, is generated in code when the server starts, so t
 ## Play it now
 
 1. Download [`build/sando.rbxl`](build/sando.rbxl) and open it in Roblox Studio.
-2. Press **Play** to try the lobby, shop and training dummies by yourself.
-3. To test a real duel, open the **Test** tab, set Clients to **2**, then click **Start**. Both players walk onto the **1v1 Duel** pad (or click it in the Play menu).
+2. Press **Play**. You spawn in the lobby with a Katana.
+3. Click **Practice vs Bot** in the Play menu (or use the green pad) to fight an AI opponent right away. You can also hit the training dummies.
+4. To test a duel between two real players, open the **Test** tab, set Clients to **2**, then click **Start**. Both players join **1v1 Duel**.
+
+If something doesn't work, open **View → Output**. Errors from this game start with `[sando]`.
 
 To save progress in Studio, publish the place, then turn on **Game Settings → Security → Enable Studio Access to API Services**. Without that, gold and wins only last for the session.
 
@@ -44,6 +47,7 @@ All timing, hit detection and damage are checked on the server. Clients only sen
 
 | Mode | Players | Format | Unlocks after | Win / loss gold |
 | --- | --- | --- | --- | --- |
+| Practice vs Bot | 1 + AI | Best of 3 | Always open | 20 / 5 (doesn't count as a duel) |
 | 1v1 Duel | 2 | Best of 3 | Always open | 100 / 25 |
 | Ranked 1v1 | 2 | Best of 5, Elo | 10 duels | 150 / 30 |
 | 2v2 Clash | 4 | Best of 3 | 3 duels | 120 / 30 |
@@ -79,6 +83,7 @@ rojo build -o build/sando.rbxl   # rebuild the place file
 | `src/server/MapBuilder.luau` | Lighting, lobby, armory, dummies and the four arenas |
 | `src/server/CombatService.luau` | Attacks, parries, dodges, ultimates, damage |
 | `src/server/MatchService.luau` | Rounds, scoring, rewards and Elo |
+| `src/server/Bot.luau` | The practice AI: chases, attacks, parries and dodges |
 | `src/server/QueueService.luau` | Matchmaking queues and the lobby pads |
 | `src/server/DataService.luau` | Saves gold, wins, Elo and weapons with DataStores |
 | `src/shared/Config.luau` | All tuning numbers (timings, damage gain, rewards, modes) |

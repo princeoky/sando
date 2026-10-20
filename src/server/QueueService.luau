@@ -36,8 +36,12 @@ local function publish()
 	local current = counts()
 	QueueState:FireAllClients(current)
 	for modeId, pad in pads do
-		local needed = Config.Modes[modeId].teamSize * 2
-		pad.status.Text = string.format("%d / %d waiting", current[modeId] or 0, needed)
+		local mode = Config.Modes[modeId]
+		if mode.practice then
+			pad.status.Text = "Starts instantly"
+		else
+			pad.status.Text = string.format("%d / %d waiting", current[modeId] or 0, mode.teamSize * 2)
+		end
 	end
 end
 
@@ -65,7 +69,7 @@ function QueueService.tryMatch()
 		local queue = queues[modeId]
 		local needed = mode.teamSize * 2
 
-		while #queue >= needed and MatchService.hasFreeArena() do
+		while not mode.practice and #queue >= needed and MatchService.hasFreeArena() do
 			local picked = {}
 			for _ = 1, needed do
 				table.insert(picked, table.remove(queue, 1))
@@ -106,6 +110,16 @@ function QueueService.join(player: Player, modeId: string)
 	end
 	if data.duels < mode.unlockDuels then
 		Notify:FireClient(player, string.format("%s unlocks after %d duels (%d to go)", mode.displayName, mode.unlockDuels, mode.unlockDuels - data.duels))
+		return
+	end
+	if mode.practice then
+		removeFromAll(player)
+		if MatchService.startPractice(player) then
+			Notify:FireClient(player, "Starting practice against a bot")
+		else
+			Notify:FireClient(player, "All arenas are busy, try again in a moment", "bad")
+		end
+		publish()
 		return
 	end
 	if player:GetAttribute("QueuedMode") == modeId then

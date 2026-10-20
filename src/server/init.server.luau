@@ -20,7 +20,18 @@ local QueueService = require(script.QueueService)
 
 Players.CharacterAutoLoads = false
 
-local map = MapBuilder.build()
+-- If the map ever fails to build, still give players something to stand on
+-- and report the error, instead of everyone falling forever.
+local built, map = pcall(MapBuilder.build)
+if not built then
+	warn("[sando] Map failed to build:", map)
+	local floor = Instance.new("SpawnLocation")
+	floor.Anchored = true
+	floor.Size = Vector3.new(100, 1, 100)
+	floor.Duration = 0
+	floor.Parent = workspace
+	map = { lobby = { pads = {}, shopPrompts = {} }, arenas = {} }
+end
 
 DataService.start()
 CombatService.start()
@@ -77,24 +88,32 @@ local function onCharacter(player: Player, character: Model)
 		end
 		task.wait(2)
 		if player.Parent and player.Character == character and not MatchService.isInMatch(player) then
-			player:LoadCharacterAsync()
+			MatchService.spawnPlayer(player)
 		end
 	end)
 
 	waitForBody(player, character)
+	local data = DataService.waitForLoad(player, 10)
 	if character.Parent and player.Character == character then
-		local data = DataService.get(player)
 		WeaponFactory.attach(character, data and data.equipped or Weapons.Default)
 	end
 end
 
+local setUp: { [Player]: boolean } = {}
+
 local function onPlayerAdded(player: Player)
+	if setUp[player] then
+		return
+	end
+	setUp[player] = true
 	player.CharacterAdded:Connect(function(character)
 		onCharacter(player, character)
 	end)
-	DataService.load(player)
+	-- Spawn right away; saved data loads alongside and the weapon is attached
+	-- once it arrives.
+	task.spawn(DataService.load, player)
 	if player.Parent and not player.Character then
-		player:LoadCharacterAsync()
+		MatchService.spawnPlayer(player)
 	end
 end
 
@@ -104,6 +123,7 @@ for _, player in Players:GetPlayers() do
 end
 
 Players.PlayerRemoving:Connect(function(player)
+	setUp[player] = nil
 	CombatService.remove(player)
 	DataService.release(player)
 end)

@@ -345,13 +345,14 @@ local function buildLobby(map: Folder)
 	-- Queue pads
 	local pads = {}
 	local padColors = {
+		Practice = Color3.fromRGB(140, 230, 140),
 		Casual = Color3.fromRGB(90, 200, 255),
 		Ranked = Color3.fromRGB(255, 196, 70),
 		Clash = Color3.fromRGB(255, 90, 110),
 	}
 	for i, modeId in Config.ModeOrder do
 		local mode = Config.Modes[modeId]
-		local x = (i - 2) * 26
+		local x = (i - (#Config.ModeOrder + 1) / 2) * 24
 		local pos = Vector3.new(x, 0.2, -28)
 		disc({ Name = "PadGlow", Color = padColors[modeId], Material = Enum.Material.Neon, Parent = lobby }, pos + Vector3.new(0, 0.1, 0), 15.5, 0.6)
 		local pad = disc({ Name = "QueuePad_" .. modeId, Color = Color3.fromRGB(44, 40, 46), Material = Enum.Material.Slate, Parent = lobby }, pos + Vector3.new(0, 0.3, 0), 14, 0.8)
@@ -470,7 +471,7 @@ local function buildLobby(map: Folder)
 	text.Font = Enum.Font.GothamBold
 	text.TextColor3 = Color3.fromRGB(255, 240, 220)
 	text.TextScaled = true
-	text.Text = "HOW TO DUEL\n\nClick: attack combo\nHold E: heavy (full charge can't be parried)\nF: parry   Q: dodge   G: ultimate\n\nParry a hit to stun your opponent.\nWin rounds to earn gold, then buy weapons at the Armory."
+	text.Text = "HOW TO DUEL\n\nClick: attack combo\nHold E: heavy (full charge can't be parried)\nF: parry   Q: dodge   G: ultimate\n\nParry a hit to stun your opponent.\nPlaying alone? Try Practice vs Bot.\nWin rounds to earn gold, then buy weapons at the Armory."
 	text.Parent = surface
 
 	return {

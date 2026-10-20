@@ -1,6 +1,9 @@
 -- Server-authoritative melee combat: light combos, charged heavies, parries,
 -- dodges and ultimates. Clients only send inputs; the server owns timing,
 -- hit detection, damage and the ultimate meter.
+--
+-- A "fighter" is either a Player or a practice Bot. Both expose .Character,
+-- and bots drive the same actions through CombatService.perform.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -14,6 +17,13 @@ local CombatAction = Remotes.CombatAction :: RemoteEvent
 local CombatFeedback = Remotes.CombatFeedback :: RemoteEvent
 
 local CombatService = {}
+
+-- Fires (attackerCharacter, kind, windup) whenever a swing starts. Bots use
+-- it to react to incoming attacks.
+local swungEvent = Instance.new("BindableEvent")
+CombatService.Swung = swungEvent.Event
+
+type Fighter = any -- Player or Bot
 
 type State = {
 	busyUntil: number,
@@ -39,14 +49,19 @@ type Attack = {
 	parryable: boolean,
 }
 
-local states: { [Player]: State } = {}
+local states: { [Fighter]: State } = {}
+local characterOwner: { [Model]: Fighter } = setmetatable({}, { __mode = "k" }) :: any
 
 -- Wired up by the bootstrap so this module doesn't depend on MatchService.
-local getTargets: (Player) -> { Model } = function()
+local getTargets: (Fighter) -> { Model } = function()
 	return {}
 end
-local canFight: (Player) -> boolean = function()
+local canFight: (Fighter) -> boolean = function()
 	return true
+end
+
+local function isPlayer(fighter: Fighter): boolean
+	return typeof(fighter) == "Instance" and fighter:IsA("Player")
 end
 
 local function newState(ult: number?): State
@@ -71,8 +86,8 @@ local function broadcast(kind: string, ...)
 	CombatFeedback:FireAllClients(kind, ...)
 end
 
-local function aliveCharacter(player: Player): (Model?, Humanoid?, BasePart?)
-	local character = player.Character
+local function aliveCharacter(fighter: Fighter): (Model?, Humanoid?, BasePart?)
+	local character = fighter.Character
 	if not character then
 		return nil
 	end
@@ -84,30 +99,32 @@ local function aliveCharacter(player: Player): (Model?, Humanoid?, BasePart?)
 	return character, humanoid, root :: BasePart
 end
 
-local function weaponOf(player: Player)
-	local character = player.Character
+local function weaponOf(fighter: Fighter)
+	local character = fighter.Character
 	return Weapons.get(character and character:GetAttribute("Weapon") or Weapons.Default)
 end
 
-local function setUlt(player: Player, value: number)
-	local state = states[player]
+local function setUlt(fighter: Fighter, value: number)
+	local state = states[fighter]
 	if not state then
 		return
 	end
 	state.ult = math.clamp(value, 0, Config.UltMax)
-	player:SetAttribute("Ultimate", state.ult)
-end
-
-local function addUlt(player: Player, amount: number)
-	local state = states[player]
-	if state then
-		setUlt(player, state.ult + amount)
+	if isPlayer(fighter) then
+		fighter:SetAttribute("Ultimate", state.ult)
 	end
 end
 
-local function updateSpeed(player: Player)
-	local state = states[player]
-	local _, humanoid = aliveCharacter(player)
+local function addUlt(fighter: Fighter, amount: number)
+	local state = states[fighter]
+	if state then
+		setUlt(fighter, state.ult + amount)
+	end
+end
+
+local function updateSpeed(fighter: Fighter)
+	local state = states[fighter]
+	local _, humanoid = aliveCharacter(fighter)
 	if not state or not humanoid then
 		return
 	end
@@ -123,12 +140,40 @@ local function updateSpeed(player: Player)
 	humanoid.WalkSpeed = speed
 end
 
-local function updateSpeedAt(player: Player, at: number)
-	task.delay(math.max(0, at - os.clock()) + 0.01, updateSpeed, player)
+local function updateSpeedAt(fighter: Fighter, at: number)
+	task.delay(math.max(0, at - os.clock()) + 0.01, updateSpeed, fighter)
 end
 
-local function stun(player: Player, duration: number)
-	local state = states[player]
+-- Short horizontal shove. Players move their own character (the client owns
+-- its physics); bots are moved here on the server.
+local function shove(fighter: Fighter, velocity: Vector3, duration: number)
+	if isPlayer(fighter) then
+		CombatFeedback:FireClient(fighter, "Knockback", velocity, duration)
+		return
+	end
+	local _, _, root = aliveCharacter(fighter)
+	if not root then
+		return
+	end
+	local attachment = Instance.new("Attachment")
+	attachment.Parent = root
+	local mover = Instance.new("LinearVelocity")
+	mover.Attachment0 = attachment
+	mover.RelativeTo = Enum.ActuatorRelativeTo.World
+	mover.VelocityConstraintMode = Enum.VelocityConstraintMode.Plane
+	mover.PrimaryTangentAxis = Vector3.new(1, 0, 0)
+	mover.SecondaryTangentAxis = Vector3.new(0, 0, 1)
+	mover.PlaneVelocity = Vector2.new(velocity.X, velocity.Z)
+	mover.MaxForce = 60000
+	mover.Parent = root
+	task.delay(duration, function()
+		mover:Destroy()
+		attachment:Destroy()
+	end)
+end
+
+local function stun(fighter: Fighter, duration: number)
+	local state = states[fighter]
 	if not state then
 		return
 	end
@@ -140,7 +185,7 @@ local function stun(player: Player, duration: number)
 	state.busyUntil = math.max(state.busyUntil, state.stunUntil)
 	state.parryActiveUntil = 0
 
-	local character = player.Character
+	local character = fighter.Character
 	if character then
 		character:SetAttribute("Stunned", true)
 		if wasCharging then
@@ -148,15 +193,15 @@ local function stun(player: Player, duration: number)
 		end
 		broadcast("Stunned", character, duration)
 	end
-	updateSpeed(player)
+	updateSpeed(fighter)
 
 	local stunUntil = state.stunUntil
 	task.delay(duration + 0.01, function()
-		if states[player] == state and state.stunUntil == stunUntil then
-			if player.Character then
-				player.Character:SetAttribute("Stunned", false)
+		if states[fighter] == state and state.stunUntil == stunUntil then
+			if character and character.Parent then
+				character:SetAttribute("Stunned", false)
 			end
-			updateSpeed(player)
+			updateSpeed(fighter)
 		end
 	end)
 end
@@ -198,22 +243,22 @@ local function damageDummy(model: Model, humanoid: Humanoid, damage: number)
 end
 
 -- Returns true if the attack was parried (which ends the swing).
-local function applyHit(attacker: Player, attackerRoot: BasePart, target: Model, attack: Attack): boolean
+local function applyHit(attacker: Fighter, attackerRoot: BasePart, target: Model, attack: Attack): boolean
 	local humanoid = target:FindFirstChildOfClass("Humanoid")
 	local targetRoot = target:FindFirstChild("HumanoidRootPart") :: BasePart?
 	if not humanoid or humanoid.Health <= 0 or not targetRoot then
 		return false
 	end
 	local now = os.clock()
-	local victim = Players:GetPlayerFromCharacter(target)
+	local victim = characterOwner[target]
+	local vs = victim and states[victim]
 
-	if victim then
-		local vs = states[victim]
-		if vs and now < vs.iframeUntil then
+	if vs then
+		if now < vs.iframeUntil then
 			broadcast("Dodged", target)
 			return false
 		end
-		if vs and attack.parryable and now >= vs.parryStart and now <= vs.parryActiveUntil then
+		if attack.parryable and now >= vs.parryStart and now <= vs.parryActiveUntil then
 			vs.parryActiveUntil = 0
 			vs.busyUntil = now -- free to punish right away
 			addUlt(victim, Config.UltGainParry)
@@ -225,7 +270,7 @@ local function applyHit(attacker: Player, attackerRoot: BasePart, target: Model,
 	end
 
 	local damage = attack.damage
-	if victim then
+	if vs then
 		humanoid.Health = math.max(0, humanoid.Health - damage)
 		addUlt(victim, damage * Config.UltGainTaken)
 		if humanoid.Health > 0 then
@@ -234,7 +279,7 @@ local function applyHit(attacker: Player, attackerRoot: BasePart, target: Model,
 			push = Vector3.new(push.X, 0, push.Z)
 			if push.Magnitude > 1e-3 then
 				local strength = if attack.kind == "Light" then Config.Knockback else Config.Knockback * 1.8
-				CombatFeedback:FireClient(victim, "Knockback", push.Unit * strength)
+				shove(victim, push.Unit * strength, 0.12)
 			end
 		end
 	else
@@ -246,29 +291,34 @@ local function applyHit(attacker: Player, attackerRoot: BasePart, target: Model,
 	return false
 end
 
-local function resolve(player: Player, token: number, attack: Attack)
-	local state = states[player]
+local function resolve(fighter: Fighter, token: number, attack: Attack)
+	local state = states[fighter]
 	if not state or state.token ~= token then
 		return
 	end
-	local _, _, root = aliveCharacter(player)
-	if not root or not canFight(player) then
+	local _, _, root = aliveCharacter(fighter)
+	if not root or not canFight(fighter) then
 		return
 	end
-	for _, target in getTargets(player) do
+	for _, target in getTargets(fighter) do
 		local targetRoot = target:FindFirstChild("HumanoidRootPart") :: BasePart?
 		if targetRoot and inCone(root, targetRoot, attack.range, attack.arc) then
-			if applyHit(player, root, target, attack) then
+			if applyHit(fighter, root, target, attack) then
 				break
 			end
 		end
 	end
 end
 
-local function schedule(player: Player, state: State, windup: number, attack: Attack)
+local function schedule(fighter: Fighter, state: State, windup: number, attack: Attack)
 	state.token += 1
 	local token = state.token
-	task.delay(windup, resolve, player, token, attack)
+	task.delay(windup, resolve, fighter, token, attack)
+end
+
+local function announceSwing(character: Model, kind: string, index: number, windup: number)
+	broadcast("Swing", character, kind, index, windup)
+	swungEvent:Fire(character, kind, windup)
 end
 
 ---------------------------------------------------------------------------
@@ -277,11 +327,11 @@ end
 
 local actions = {}
 
-function actions.Light(player: Player, state: State, character: Model, now: number)
+function actions.Light(fighter: Fighter, state: State, character: Model, now: number)
 	if now < state.busyUntil or state.charging then
 		return
 	end
-	local weapon = weaponOf(player)
+	local weapon = weaponOf(fighter)
 	local combo = weapon.damage.light
 	if now - state.lastLight > weapon.comboReset or state.combo >= #combo then
 		state.combo = 1
@@ -293,62 +343,62 @@ function actions.Light(player: Player, state: State, character: Model, now: numb
 	local isLast = index == #combo
 	state.busyUntil = now + weapon.lightWindup + (if isLast then weapon.comboEndRecovery else weapon.lightRecovery)
 
-	broadcast("Swing", character, "Light", index, weapon.lightWindup)
-	schedule(player, state, weapon.lightWindup, {
+	announceSwing(character, "Light", index, weapon.lightWindup)
+	schedule(fighter, state, weapon.lightWindup, {
 		kind = "Light",
 		damage = combo[index],
 		range = weapon.range,
 		arc = weapon.arc,
 		parryable = true,
 	})
-	updateSpeed(player)
-	updateSpeedAt(player, state.busyUntil)
+	updateSpeed(fighter)
+	updateSpeedAt(fighter, state.busyUntil)
 end
 
-function actions.HeavyStart(player: Player, state: State, character: Model, now: number)
+function actions.HeavyStart(fighter: Fighter, state: State, character: Model, now: number)
 	if now < state.busyUntil or state.charging then
 		return
 	end
-	local weapon = weaponOf(player)
+	local weapon = weaponOf(fighter)
 	state.charging = true
 	state.chargeStart = now
 	state.token += 1
 	local token = state.token
 	broadcast("ChargeStart", character, weapon.maxCharge)
-	updateSpeed(player)
+	updateSpeed(fighter)
 
 	-- Don't let anyone hold a charge forever
 	task.delay(weapon.maxCharge + 1, function()
-		if states[player] == state and state.token == token and state.charging then
-			actions.HeavyRelease(player, state, character, os.clock())
+		if states[fighter] == state and state.token == token and state.charging then
+			actions.HeavyRelease(fighter, state, character, os.clock())
 		end
 	end)
 end
 
-function actions.HeavyRelease(player: Player, state: State, character: Model, now: number)
+function actions.HeavyRelease(fighter: Fighter, state: State, character: Model, now: number)
 	if not state.charging then
 		return
 	end
-	local weapon = weaponOf(player)
+	local weapon = weaponOf(fighter)
 	state.charging = false
 	local charge = math.clamp((now - state.chargeStart) / weapon.maxCharge, 0, 1)
 	local damage = weapon.damage.heavyMin + (weapon.damage.heavyMax - weapon.damage.heavyMin) * charge
 	state.busyUntil = now + weapon.heavyWindup + weapon.heavyRecovery
 	state.combo = 0
 
-	broadcast("Swing", character, "Heavy", charge, weapon.heavyWindup)
-	schedule(player, state, weapon.heavyWindup, {
+	announceSwing(character, "Heavy", charge, weapon.heavyWindup)
+	schedule(fighter, state, weapon.heavyWindup, {
 		kind = "Heavy",
 		damage = math.floor(damage + 0.5),
 		range = weapon.range + 0.5,
 		arc = weapon.arc,
 		parryable = charge < Config.HeavyUnparryableAt,
 	})
-	updateSpeed(player)
-	updateSpeedAt(player, state.busyUntil)
+	updateSpeed(fighter)
+	updateSpeedAt(fighter, state.busyUntil)
 end
 
-function actions.Parry(player: Player, state: State, character: Model, now: number)
+function actions.Parry(fighter: Fighter, state: State, character: Model, now: number)
 	if now < state.busyUntil or state.charging or now < state.parryReadyAt then
 		return
 	end
@@ -357,11 +407,11 @@ function actions.Parry(player: Player, state: State, character: Model, now: numb
 	state.parryReadyAt = now + Config.ParryCooldown
 	state.busyUntil = now + Config.ParryWindow + Config.ParryWhiffRecovery
 	broadcast("Parry", character)
-	updateSpeed(player)
-	updateSpeedAt(player, state.busyUntil)
+	updateSpeed(fighter)
+	updateSpeedAt(fighter, state.busyUntil)
 end
 
-function actions.Dodge(player: Player, state: State, character: Model, now: number)
+function actions.Dodge(fighter: Fighter, state: State, character: Model, now: number, direction: Vector3?)
 	if now < state.dodgeReadyAt then
 		return
 	end
@@ -375,71 +425,107 @@ function actions.Dodge(player: Player, state: State, character: Model, now: numb
 	state.busyUntil = math.max(state.busyUntil, now + Config.DodgeDuration)
 	state.parryActiveUntil = 0
 	broadcast("Dodge", character)
-	updateSpeed(player)
-	updateSpeedAt(player, state.busyUntil)
+	if not isPlayer(fighter) and direction and direction.Magnitude > 0.1 then
+		shove(fighter, direction.Unit * Config.DodgeSpeed, Config.DodgeDuration)
+	end
+	updateSpeed(fighter)
+	updateSpeedAt(fighter, state.busyUntil)
 end
 
-function actions.Ultimate(player: Player, state: State, character: Model, now: number)
+function actions.Ultimate(fighter: Fighter, state: State, character: Model, now: number)
 	if state.ult < Config.UltMax or now < state.busyUntil or state.charging then
 		return
 	end
-	local weapon = weaponOf(player)
+	local weapon = weaponOf(fighter)
 	local windup = 0.55
-	setUlt(player, 0)
+	setUlt(fighter, 0)
 	state.busyUntil = now + windup + 0.6
-	broadcast("Swing", character, "Ultimate", 0, windup)
-	schedule(player, state, windup, {
+	announceSwing(character, "Ultimate", 0, windup)
+	schedule(fighter, state, windup, {
 		kind = "Ultimate",
 		damage = weapon.damage.ultimate,
 		range = weapon.ultRange,
 		arc = 120,
 		parryable = false,
 	})
-	updateSpeed(player)
-	updateSpeedAt(player, state.busyUntil)
+	updateSpeed(fighter)
+	updateSpeedAt(fighter, state.busyUntil)
 end
 
 ---------------------------------------------------------------------------
 -- Public API
 ---------------------------------------------------------------------------
 
-function CombatService.setResolvers(targets: (Player) -> { Model }, fight: (Player) -> boolean)
+function CombatService.setResolvers(targets: (Fighter) -> { Model }, fight: (Fighter) -> boolean)
 	getTargets = targets
 	canFight = fight
 end
 
--- Fresh combat state for a new character. Keeps the ultimate meter unless
--- clearUlt is set (the meter carries between rounds of a match).
-function CombatService.reset(player: Player, clearUlt: boolean?)
-	local previous = states[player]
+-- Fresh combat state for a fighter's current character. Keeps the ultimate
+-- meter unless clearUlt is set (the meter carries between rounds).
+function CombatService.reset(fighter: Fighter, clearUlt: boolean?)
+	local previous = states[fighter]
 	local ult = if clearUlt or not previous then 0 else previous.ult
-	states[player] = newState(ult)
-	player:SetAttribute("Ultimate", ult)
+	states[fighter] = newState(ult)
+	if fighter.Character then
+		characterOwner[fighter.Character] = fighter
+	end
+	if isPlayer(fighter) then
+		fighter:SetAttribute("Ultimate", ult)
+	end
 end
 
-function CombatService.remove(player: Player)
-	states[player] = nil
+function CombatService.remove(fighter: Fighter)
+	states[fighter] = nil
+end
+
+function CombatService.getUlt(fighter: Fighter): number
+	local state = states[fighter]
+	return state and state.ult or 0
+end
+
+function CombatService.isBusy(fighter: Fighter): boolean
+	local state = states[fighter]
+	if not state then
+		return true
+	end
+	local now = os.clock()
+	return state.charging or now < state.busyUntil or now < state.stunUntil
+end
+
+function CombatService.isCharging(fighter: Fighter): boolean
+	local state = states[fighter]
+	return state ~= nil and state.charging
+end
+
+-- Runs one action for a fighter. Returns nothing; invalid actions are ignored.
+function CombatService.perform(fighter: Fighter, action: string, arg: any?)
+	local handler = actions[action]
+	local state = states[fighter]
+	if not handler or not state then
+		return
+	end
+	local character = aliveCharacter(fighter)
+	if not character or not canFight(fighter) then
+		return
+	end
+	local now = os.clock()
+	if now < state.stunUntil then
+		return
+	end
+	handler(fighter, state, character, now, arg)
 end
 
 function CombatService.start()
 	CombatAction.OnServerEvent:Connect(function(player: Player, action: unknown)
-		if type(action) ~= "string" then
-			return
+		if type(action) == "string" then
+			-- Players move themselves when dodging, so no direction is passed
+			CombatService.perform(player, action)
 		end
-		local handler = actions[action]
-		local state = states[player]
-		if not handler or not state then
-			return
-		end
-		local character = aliveCharacter(player)
-		if not character or not canFight(player) then
-			return
-		end
-		local now = os.clock()
-		if now < state.stunUntil then
-			return
-		end
-		handler(player, state, character, now)
+	end)
+
+	Players.PlayerRemoving:Connect(function(player)
+		states[player] = nil
 	end)
 end
 
